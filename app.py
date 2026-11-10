@@ -9,6 +9,16 @@ import sqlite3
 
 from flask import Flask, g, jsonify, request
 
+from werkzeug.security import generate_password_hash, check_password_hash
+
+def hash_password(plain_password: str) -> str:
+    """Return a secure hash of the given plaintext password."""
+    return generate_password_hash(plain_password)
+
+def verify_password(stored_hash: str, candidate_password: str) -> bool:
+    """Check whether a candidate password matches the stored hash."""
+    return check_password_hash(stored_hash, candidate_password)
+
 DATABASE = "recipes.db"
 
 app = Flask(__name__)
@@ -38,7 +48,61 @@ def recipe_to_dict(row):
         "is_public": bool(row["is_public"]),
     }
 
+@app.post("/login")
+def login():
+    data = request.get_json(silent=True)
+    if not data or "username" not in data or "password" not in data:
+        return jsonify({"error": "username and password are required"}), 400
 
+    db = get_db()
+    row = db.execute(
+        "SELECT id, username, password_hash FROM users WHERE username = ?",
+        (data["username"],),
+    ).fetchone()
+
+    # Generic failure if user not found OR password wrong
+    if row is None or not verify_password(row["password_hash"], data["password"]):
+        return jsonify({"error": "invalid username or password"}), 401
+
+    # Success: return a safe identity (no password, no hash)
+    return jsonify({
+        "id": row["id"],
+        "username": row["username"],
+        "message": "login successful"
+    }), 200
+
+@app.post("/register")
+def register():
+    data = request.get_json(silent=True)
+    if not data or "username" not in data or "password" not in data:
+        return jsonify({"error": "username and password are required"}), 400
+
+    db = get_db()
+    try:
+        cur = db.execute(
+            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+            (
+                data["username"],
+                hash_password(data["password"]),
+            ),
+        )
+        db.commit()
+    except sqlite3.IntegrityError:
+        # username already taken
+        return jsonify({"error": "username already exists"}), 409
+
+    # Return the new user's identity (no password, no hash)
+    new_user = db.execute(
+        "SELECT id, username FROM users WHERE id = ?",
+        (cur.lastrowid,),
+    ).fetchone()
+
+    return jsonify({
+        "id": new_user["id"],
+        "username": new_user["username"],
+        "message": "registered successfully"
+    }), 201
+    
 @app.get("/")
 def hello():
     return jsonify({"message": "Recipe Box API", "recipes": "/recipes"})
